@@ -68,12 +68,54 @@ const double maxFuellhoehe = 2000;           // Füllhöhe der Zisterne in mm
 const int maxFuellmennge = 21080;           // Füllmenge der Zisterne in L
 
 int atmDruck, messDruck, vergleichswert;
+double gefilterterDruck = 100097.0;
+const double druckAlpha = 0.12;
+double letzteHoehe = 0.0;
 int messSchritt, wassersaeule;
 String hoehe = " - - ";
 String volumen = "- - ";
 String fuellstand = " - - "; 
 String error = "Start - No Error"; 
 unsigned long messung, messTakt;
+
+double berechneVolumen(double h, double R, double L) {
+    if (h <= 0.0 || R <= 0.0 || L <= 0.0) return 0.0;
+
+    if (h >= 2.0 * R) {
+        return (sq(R) * L) / 1000.0;
+    }
+
+    double normalized = constrain((R - h) / R, -1.0, 1.0);
+    double a = sq(R) * L;
+    double b = acos(normalized);
+    double c = R - h;
+    double d = sqrt(max(0.0, 2.0 * R * h - sq(h)));
+    double e = sq(R);
+    double v = (a * (b - c * d / e)) / 1000.0;
+
+    if (isnan(v) || isinf(v)) {
+      Serial.println(F("Fehler: Ungültige Volumenberechnung"));
+      v = 0.0;
+    }
+
+    return v;
+}
+
+void sendeWebResponse(WiFiClient& client) {
+    client.print(F("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\nRefresh: 15\r\n\r\n<!DOCTYPE HTML><html>"));
+    client.print(F("<head><title>Fuellstandsmesser</title>"));
+    client.print(F("<meta charset=\"utf-8\" http-equiv='refresh' content='60'>"));
+    client.print(F("<meta name='viewport' content='width=device-width, initial-scale=1.0' /></head>"));
+    client.print(F("<h1>Füllstand Zisterne</h1><br>"));
+    client.print(F("<table>"));
+    client.print(F("<tr><td><b>Füllhöhe:</b> </td><td id=\"hoehe\">")); client.print(hoehe); client.print(F("</td><td>cm</td></tr>"));
+    client.print(F("<tr><td><b>Volumen:</b> </td><td id=\"volumen\">")); client.print(volumen); client.print(F("</td><td>L</td></tr>"));
+    client.print(F("<tr><td><b>Füllstand:</b> </td><td id=\"fuellstand\">")); client.print(fuellstand); client.print(F("</td><td>%</td></tr>"));
+    client.print(F("<tr><td><b>Errorcode:</b> </td><td id=\"error\">")); client.print(error); client.print(F("</td></tr>"));
+    client.print(F("</table></html>"));
+    error = "No Error";
+    if (messSchritt == 0) messSchritt = 1;
+}
 
 // **************************************************************************************
 // State-Machine Füllstandsmessung
@@ -114,29 +156,15 @@ void messablauf() {
       case 3:  // Beruhigungszeit abgelaufen, Messwert ermitteln
          if (messung < millis()) {
 
-            double a = 0 ;
-            double b = 0 ;
-            double c = 0 ;
-            double d = 0 ;
-            double e = 0 ;
-            double v = 0 ;
-            double h = 0 ;
-
-            double old_h = h;
-            
-            h = wassersaeule / 10; // wasserhöhe in cm     
+            double h = wassersaeule / 10.0; // wasserhöhe in cm     
 
             // Bei zu großen Abweichungen liegt ein Messfehler vor, daher letzte Messung verwenden
-            if ( h < old_h/10 ) {
-              h = old_h;  
+            if (h < letzteHoehe * 0.1) {
+              h = letzteHoehe;  
             }
-//            volumen = String((wassersaeule / 10) * A / 100) + "L";
-            a = (sq(R) * L);
-            b = (acos((R - h) / R));
-            c = (R - h);
-            d = (sqrt (2 * R * h - sq(h)));
-            e = (sq(R));
-            v = (a * (b - c * d / e))/1000;
+
+            double v = berechneVolumen(h, R, L);
+            letzteHoehe = h;
             // Für Webausgabe Variablen füllen
                
 
@@ -149,15 +177,7 @@ void messablauf() {
               volumen = String(maxFuellmennge);
               fuellstand = String(100);
             }            
-//            Serial.println("a: "+ String(a));
-//            Serial.println("b: "+ String(b));
-//            Serial.println("c: "+ String(c));
-//            Serial.println("d: "+ String(d));
-//            Serial.println("e: "+ String(e));
-//            Serial.println("v: "+ String(v));
-//            Serial.println("h: "+ String(h));
             Serial.println("Füllhöhe: "+ String(h) + "cm");
-//            Serial.println("wassersaeulellhöhe: "+ String(wassersaeule));
             Serial.println("Volumen: " + volumen);
             Serial.println("Füllstand: " + fuellstand);
             Serial.println();
@@ -209,7 +229,8 @@ void setup() {
    if(!mpr.begin()) {
       Serial.println("Keine Verbindung zum Drucksensor.");
       error = "Fehler: Keine Verbindung zum Drucksensor.";
-      while(1);
+      delay(5000);
+      ESP.restart();
    }
 
    // WiFi initialisieren
@@ -220,7 +241,7 @@ void setup() {
       delay(500);
       Serial.print(".");
    }
-   Serial.println();
+   
    server.begin();
    Serial.println("Server ist gestartet");
    Serial.print("IP-Adresse: ");
@@ -238,9 +259,9 @@ void setup() {
 
    messTakt = 0;
    messSchritt = 0;
-   atmDruck = 100097.0;                    // Augangswert Atmosphärendruck in Pa 
+   atmDruck = 100097;                    // Ausgangswert Atmosphärendruck in Pa 
 }
-                                          
+
 void loop() {
    static String inputString;
    // OTA-Service bedienen                                                                                                                              
@@ -287,13 +308,21 @@ void loop() {
    } 
 
    // Alle 10 ms Sensorwert auslesen                                          
-   if (messTakt < millis()) {
-      // Messwert in Pascal auslesen und filtern
-      messDruck = ((messDruck * 50) + int(mpr.readPressure(PA))) / 51;
+   unsigned long currentMillis = millis();
+   if (currentMillis - messTakt >= 10) {
+      double sensorDruck = mpr.readPressure(PA);
+      gefilterterDruck = druckAlpha * sensorDruck + (1.0 - druckAlpha) * gefilterterDruck;
+      messDruck = int(gefilterterDruck + 0.5);
       // Umrechnung Pa in mmH2O   
       wassersaeule = (messDruck - atmDruck) * 10197 / 100000;
       if (wassersaeule < 0) wassersaeule = 0;
-      messTakt = millis() + 10;
+      messTakt = currentMillis;
+   }
+
+   static unsigned long lastWifiRetry = 0;
+   if (WiFi.status() != WL_CONNECTED && currentMillis - lastWifiRetry >= 5000) {
+      lastWifiRetry = currentMillis;
+      WiFi.reconnect();
    }
 
    // Sicherheitsabschaltung der Pumpe bei Überdruck
@@ -315,19 +344,7 @@ void loop() {
           String line = client.readStringUntil('\r');
           Serial.print(line);
           if (line.length() == 1 && line[0] == '\n'){
-            client.print("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\nRefresh: 15\r\n\r\n<!DOCTYPE HTML><html>");
-            client.print("<head><title>Fuellstandsmesser</title>");
-            client.print("<meta charset=\"utf-8\" http-equiv='refresh' content='60'>");
-            client.print("<meta name='viewport' content='width=device-width, initial-scale=1.0' /></head>");
-            client.print("<h1>Füllstand Zisterne</h1><br>");
-            client.print("<table>");
-            client.print("<tr><td><b>Füllhöhe:</b> </td><td id=\"hoehe\">"); client.print(hoehe); client.print("<br></td><td>cm</td></tr>");
-            client.print("<tr><td><b>Volumen:</b> </td><td id=\"volumen\">"); client.print(volumen); client.print("<br></td><td>L</td></tr>");
-            client.print("<tr><td><b>Füllstand:</b> </td><td id=\"fuellstand\">"); client.print(fuellstand); client.print("<br></td><td>%</td></tr>");
-            client.print("<tr><td><b>Errorcode:</b> </td><td id=\"error\">"); client.print(error); client.print("<br></td></tr>");
-            client.print("</table></html>");
-            error = "No Error";
-            if (messSchritt == 0) messSchritt = 1;
+            sendeWebResponse(client);
             break;
           }
         }
@@ -339,4 +356,4 @@ void loop() {
       client.stop();
    }
 
-} 
+}
