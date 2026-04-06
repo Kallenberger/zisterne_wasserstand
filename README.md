@@ -42,15 +42,17 @@ Ablauf:
 Bei einem liegenden Zylinder hängt das Füllvolumen nicht linear von der Füllhöhe ab. Eine typische Formel für das Volumen eines horizontalen Zylindersegments ist:
 
 ```text
-V = L * (R^2 * arccos((R - h) / R) - (R - h) * sqrt(2 * R * h - h^2))
+v = ((sq(R) * L) * (acos((R - h) / R) - (R - h) * sqrt(2 * R * h - sq(h)) / sq(R) ))/1000;
 ```
 
-- `V` = Volumen
+- `v` = Volumen
 - `L` = Länge des Zylinders
 - `R` = Radius
 - `h` = Füllhöhe
 
-Für Home Assistant kann außerdem ein Prozentwert berechnet werden:
+Devision durch 1000, um von cm³ zu Litern umzurechnen (da 1 Liter = 1000 cm³).
+
+Für Home Assistant wird außerdem ein Prozentwert berechnet:
 
 ```text
 prozent = (aktuelles_volumen / maximal_volumen) * 100
